@@ -1,0 +1,96 @@
+# Import libraries
+import os
+import requests
+from bs4 import BeautifulSoup
+from sentence_transformers import SentenceTransformer
+import chromadb
+from langchain.vectorstores import Chroma
+from langchain.chains import RetrievalQA
+from langchain.schema import Document
+
+# Step 1: Crawl and Scrape Website
+def scrape_website(url):
+    """
+    Function to scrape website content.
+    """
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Failed to fetch {url}")
+            return ""
+        soup = BeautifulSoup(response.text, "html.parser")
+        texts = soup.stripped_strings  # Extract readable text
+        return "\n".join(texts)
+    except Exception as e:
+        print(f"Error scraping {url}: {e}")
+        return ""
+
+# List of websites to scrape
+urls = [
+    "https://www.uchicago.edu/",
+    "https://www.washington.edu/",
+    "https://www.stanford.edu/",
+    "https://und.edu/"
+]
+
+# Scrape content from websites
+website_texts = ""
+for url in urls:
+    print(f"Scraping {url}...")
+    website_texts += scrape_website(url)
+
+print("Scraping completed!")
+
+# Step 2: Chunk the Data
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+chunks = text_splitter.split_text(website_texts)
+print(f"Number of chunks created: {len(chunks)}")
+
+# Step 3: Generate Embeddings Using Hugging Face
+print("Generating embeddings...")
+
+# Load Hugging Face model
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Convert chunks into embeddings
+embeddings = embedding_model.encode(chunks, show_progress_bar=True)
+
+# Step 4: Store Embeddings in ChromaDB
+print("Storing data in Chroma vector database...")
+client = chromadb.Client()
+collection = client.create_collection(name="website_data")
+
+# Add embeddings to the ChromaDB collection
+for i, chunk in enumerate(chunks):
+    collection.add(
+        ids=[str(i)],
+        embeddings=[embeddings[i]],
+        metadatas=[{"source": f"chunk_{i}"}],
+        documents=[chunk]
+    )
+print("Data stored in vector database.")
+
+# Step 5: Query Handling and Response
+def query_database(query, collection, model):
+    # Embed the query using the same model
+    query_embedding = model.encode(query).tolist()
+    # Perform a similarity search
+    results = collection.query(query_embeddings=[query_embedding], n_results=3)
+    
+    # Combine the top results into a response
+    response = "Here’s the relevant information:\n\n"
+    for i, doc in enumerate(results['documents'][0]):
+        response += f"Result {i+1}: {doc}\n\n"
+    return response
+
+# Interactive Query System
+print("\n### Chat with Website Data ###")
+while True:
+    query = input("Enter your query (type 'exit' to quit): ")
+    if query.lower() == "exit":
+        print("Exiting...")
+        break
+    response = query_database(query, collection, embedding_model)
+    print(f"Response:\n{response}")
